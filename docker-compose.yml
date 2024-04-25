@@ -1,0 +1,204 @@
+version: '3.6'
+
+networks:
+  iotnet:
+    driver: bridge
+
+volumes:
+  grafana_data:
+  grafana_logs:
+  nodered_data:
+  influxdb_data:
+  influxdb_backup:
+  mosquitto_pwfile:
+  mosquitto_logs:
+  mosquitto_config:
+  mosquitto_data:
+  portainer_data:
+  nginx_config:
+
+
+services:
+
+  postfix:
+    image: boky/postfix
+    container_name: postfix
+    restart: unless-stopped
+    environment:
+      - ALLOWED_SENDER_DOMAINS=*
+      - PERMIT_DOCKER=network
+    networks:
+      - iotnet
+
+  grafana:
+    container_name: grafana
+    image: grafana/grafana
+    restart: unless-stopped
+    environment:
+      - TZ=Etc/UTC
+      - GF_PATHS_DATA=/var/lib/grafana
+      - GF_PATHS_LOGS=/var/log/grafana
+      - GF_SECURITY_ADMIN_USER=${DEFAULT_USER}
+      - GF_SECURITY_ADMIN_PASSWORD=${DEFAULT_PASSWORD}
+      - GF_SMTP_ENABLED=true
+      - GF_SMTP_HOST=postfix:25
+      - GF_SMTP_FROM_ADDRESS=grafana@yourdomain.com
+      - GF_SMTP_FROM_NAME=Grafana
+      - GF_SMTP_SKIP_VERIFY=true
+      - GF_SERVER_DOMAIN=localhost
+      - GF_SERVER_HTTP_PORT=3000
+      - GF_SERVER_ROOT_URL=http://localhost:3000/
+    volumes:
+      - grafana_data:/var/lib/grafana
+      - grafana_logs:/var/log/grafana
+    healthcheck:
+      test: ["CMD", "wget", "--spider", "-q", "http://localhost:3000/api/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 30s
+    networks:
+      - iotnet
+
+  influxdb:
+    container_name: influxdb
+    image: influxdb:2.7
+    restart: unless-stopped
+    environment:
+      - TZ=Etc/UTC
+      - DOCKER_INFLUXDB_INIT_MODE=setup
+      - DOCKER_INFLUXDB_INIT_USERNAME=${DEFAULT_USER}
+      - DOCKER_INFLUXDB_INIT_PASSWORD=${DEFAULT_PASSWORD}
+      - DOCKER_INFLUXDB_INIT_ORG=iot
+      - DOCKER_INFLUXDB_INIT_BUCKET=sensor_data
+      - DOCKER_INFLUXDB_INIT_ADMIN_TOKEN=my-token
+    volumes:
+      - influxdb_data:/var/lib/influxdb2
+      - influxdb_backup:/backup
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8086/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 30s
+    networks:
+      - iotnet
+
+  mosquitto-init:
+    container_name: mosquitto-init
+    image: eclipse-mosquitto
+    restart: "no"
+    volumes:
+      - mosquitto_config:/volume/config
+      - mosquitto_pwfile:/volume/pwfile
+      - ./init/mosquitto:/init:ro
+    command:  >
+      sh -c "
+        if [ ! -f /volume/config/.initialized ]; then
+          echo 'Initializing mosquitto config';
+          cp -r /init/* /volume/config/;
+          touch /volume/config/.initialized;
+        else
+          echo 'mosquitto config already initialized';
+        fi
+        if [ ! -f /volume/pwfile/.initialized ]; then
+          echo 'Initializing mosquitto password file';
+          mosquitto_passwd -c -b /volume/pwfile/passwords.txt ${DEFAULT_USER} ${DEFAULT_PASSWORD};
+          chown mosquitto:mosquitto /volume/pwfile/passwords.txt;
+          touch /volume/pwfile/.initialized;
+        else
+          echo 'mosquitto password file already initialized';
+        fi
+      "
+
+  mosquitto:
+    container_name: mosquitto
+    image: eclipse-mosquitto
+    restart: unless-stopped
+    environment:
+      - TZ=${TZ:-Etc/UTC}
+    ports:
+      - "0.0.0.0:1883:1883"
+    volumes:
+      - mosquitto_config:/mosquitto/config
+      - mosquitto_data:/mosquitto/data
+      - mosquitto_logs:/mosquitto/log
+      - mosquitto_pwfile:/mosquitto/pwfile
+    networks:
+      - iotnet
+    depends_on:
+      - mosquitto-init
+
+  nodered-init:
+    image: alpine:latest
+    restart: "no"
+    volumes:
+      - nodered_data:/data
+      - ./init/nodered:/init:ro
+    command:  >
+      sh -c "
+        if [ ! -f /data/.initialized ]; then
+          echo 'Initializing nodered data';
+          cp -r /init/* /data/;
+          touch /data/.initialized;
+        else
+          echo 'nodered settings.js already initialized';
+        fi
+      "
+
+  nodered:
+    container_name: nodered
+    image: nodered/node-red
+    environment:
+      - TZ=${TZ:-Etc/UTC}
+    volumes:
+      - nodered_data:/data
+    networks:
+      - iotnet
+    depends_on:
+      - nodered-init
+
+  portainer:
+    container_name: portainer
+    image: portainer/portainer-ce
+    restart: unless-stopped
+    command: --admin-password ${PORTAINER_PASSWORD_HASH}
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+      - portainer_data:/data
+    networks:
+      - iotnet
+
+  nginx-init:
+    container_name: nginx-init
+    image: alpine:latest
+    restart: "no"
+    volumes:
+    -  nginx_config:/volume
+    -  ./init/nginx:/init:ro
+    command:  >
+      sh -c "
+        if [ ! -f /volume/.initialized ]; then
+          echo 'Initializing nginx config';
+          cp -r /init/* /volume/;
+          touch /volume/.initialized;
+        else
+          echo 'nginx config already initialized';
+        fi
+      "
+
+  nginx:
+    container_name: nginx
+    image: nginx:latest
+    restart: unless-stopped
+    ports:
+      - "0.0.0.0:80:80"
+    volumes:
+      - nginx_config:/etc/nginx/
+    networks:
+      - iotnet
+    depends_on:
+      -  nodered
+      -  grafana
+      -  portainer
+
