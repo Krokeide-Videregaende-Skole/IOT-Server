@@ -1,110 +1,161 @@
 version: '3.6'
 
 networks:
-  default:
+  iotnet:
     driver: bridge
-    ipam:
-      driver: default
-  nextcloud:
-    driver: bridge
-    internal: true
-    ipam:
-      driver: default
+
+volumes:
+  grafana_data:
+  grafana_logs:
+  nodered_data:
+  influxdb_data:
+  influxdb_backup:
+  mosquitto_pwfile:
+  mosquitto_logs:
+  mosquitto_config:
+  mosquitto_data:
+  portainer_data:
+  nginx_config:
 
 services:
   grafana:
     container_name: grafana
     image: grafana/grafana
     restart: unless-stopped
-    user: "0"
-    ports:
-    - "3000:3000"
     environment:
-    - TZ=Etc/UTC
-    - GF_PATHS_DATA=/var/lib/grafana
-    - GF_PATHS_LOGS=/var/log/grafana
+      - TZ=Etc/UTC
+      - GF_PATHS_DATA=/var/lib/grafana
+      - GF_PATHS_LOGS=/var/log/grafana
     volumes:
-    - ./volumes/grafana/data:/var/lib/grafana
-    - ./volumes/grafana/log:/var/log/grafana
+      - grafana_data:/var/lib/grafana
+      - grafana_logs:/var/log/grafana
     healthcheck:
-      test: ["CMD", "wget", "-O", "/dev/null", "http://localhost:3000"]
+      test: ["CMD", "wget", "--spider", "-q", "http://localhost:3000/api/health"]
       interval: 30s
       timeout: 10s
       retries: 3
       start_period: 30s
+    networks:
+      - iotnet
 
   influxdb:
     container_name: influxdb
     image: "influxdb:1.8"
     restart: unless-stopped
-    ports:
-    - "8086:8086"
     environment:
-    - TZ=Etc/UTC
-    - INFLUXDB_HTTP_FLUX_ENABLED=false
-    - INFLUXDB_REPORTING_DISABLED=false
-    - INFLUXDB_HTTP_AUTH_ENABLED=false
-    - INFLUXDB_MONITOR_STORE_ENABLED=FALSE
-    - INFLUXDB_DB=sensor_data
-  # - INFLUX_USERNAME=iotadmin
-  # - INFLUX_PASSWORD=iotadmin
-  # - INFLUXDB_UDP_ENABLED=false
-  # - INFLUXDB_UDP_BIND_ADDRESS=0.0.0.0:8086
-  # - INFLUXDB_UDP_DATABASE=udp
+      - TZ=Etc/UTC
+      - INFLUXDB_HTTP_FLUX_ENABLED=false
+      - INFLUXDB_REPORTING_DISABLED=false
+      - INFLUXDB_HTTP_AUTH_ENABLED=false
+      - INFLUXDB_MONITOR_STORE_ENABLED=FALSE
+      - INFLUXDB_DB=sensor_data
     volumes:
-    - ./volumes/influxdb/data:/var/lib/influxdb
-    - ./backups/influxdb/db:/var/lib/influxdb/backup
+      - influxdb_data:/var/lib/influxdb
+      - influxdb_backup:/var/lib/influxdb/backup
     healthcheck:
       test: ["CMD", "curl", "http://localhost:8086"]
       interval: 30s
       timeout: 10s
       retries: 3
       start_period: 30s
+    networks:
+      - iotnet
+
+  mosquitto-init:
+    container_name: mosquitto-init
+    image: eclipse-mosquitto
+    restart: "no"
+    volumes:
+      - mosquitto_config:/volume/config
+      - mosquitto_pwfile:/volume/pwfile
+      - ./init/mosquitto:/init:ro
+    command:  >
+      sh -c "
+        if [ ! -f /volume/config/.initialized ]; then
+          echo 'Initializing mosquitto config';
+          cp -r /init/* /volume/config/;
+          touch /volume/config/.initialized;
+        else
+          echo 'mosquitto config already initialized';
+        fi
+        if [ ! -f /volume/pwfile/.initialized ]; then
+          echo 'Initializing mosquitto password file';
+          mosquitto_passwd -c -b /volume/pwfile/passwords.txt iotadmin iotadmin;
+          chown mosquitto:mosquitto /volume/pwfile/passwords.txt;
+          touch /volume/pwfile/.initialized;
+        else
+          echo 'mosquitto password file already initialized';
+        fi
+      "
 
   mosquitto:
     container_name: mosquitto
     image: eclipse-mosquitto
-    #build:
-      #context: ./.templates/mosquitto/.
-      #args:
-      #- MOSQUITTO_BASE=eclipse-mosquitto:latest
     restart: unless-stopped
     environment:
-    - TZ=${TZ:-Etc/UTC}
+      - TZ=${TZ:-Etc/UTC}
     ports:
-    - "1883:1883"
+      - "1883:1883"
     volumes:
-    - ./volumes/mosquitto/config:/mosquitto/config
-    - ./volumes/mosquitto/data:/mosquitto/data
-    - ./volumes/mosquitto/log:/mosquitto/log
-    - ./volumes/mosquitto/pwfile:/mosquitto/pwfile
+      - mosquitto_config:/mosquitto/config
+      - mosquitto_data:/mosquitto/data
+      - mosquitto_logs:/mosquitto/log
+      - mosquitto_pwfile:/mosquitto/pwfile
+    networks:
+      - iotnet
+    depends_on:
+      - mosquitto-init
 
   nodered:
     container_name: nodered
     image: nodered/node-red
-    #build:
-      #context: ./services/nodered/.
-      #args:
-      #- DOCKERHUB_TAG=latest
-      #- EXTRA_PACKAGES=
-    restart: unless-stopped
-    user: "0"
     environment:
-    - TZ=${TZ:-Etc/UTC}
-    ports:
-    - "1880:1880"
+      - TZ=${TZ:-Etc/UTC}
     volumes:
-    - ./volumes/nodered/data:/data
-    - ./volumes/nodered/ssh:/root/.ssh
-  portainer-ce:
-    container_name: portainer-ce
+      - nodered_data:/data
+    networks:
+      - iotnet
+
+  portainer:
+    container_name: portainer
     image: portainer/portainer-ce
     restart: unless-stopped
-    ports:
-    - "8000:8000"
-    - "9000:9000"
-    # HTTPS
-    - "9443:9443"
     volumes:
-    - /var/run/docker.sock:/var/run/docker.sock
-    - ./volumes/portainer-ce/data:/data
+      - /var/run/docker.sock:/var/run/docker.sock
+      - portainer_data:/data
+    networks:
+      - iotnet
+
+  nginx-init:
+    container_name: nginx-init
+    image: alpine:latest
+    restart: "no"
+    volumes:
+    -  nginx_config:/volume
+    -  ./init/nginx:/init:ro
+    command:  >
+      sh -c "
+        if [ ! -f /volume/.initialized ]; then
+          echo 'Initializing nginx config';
+          cp -r /init/* /volume/;
+          touch /volume/.initialized;
+        else
+          echo 'nginx config already initialized';
+        fi
+      "
+
+  nginx:
+    container_name: nginx
+    image: nginx:latest
+    restart: unless-stopped
+    ports:
+      - "80:80"
+    volumes:
+      - nginx_config:/etc/nginx/
+    networks:
+      - iotnet
+    depends_on:
+      -  nodered
+      -  grafana
+      -  portainer
+
