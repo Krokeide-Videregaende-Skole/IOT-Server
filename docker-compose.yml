@@ -17,6 +17,7 @@ volumes:
   portainer_data:
   nginx_config:
 
+
 services:
   grafana:
     container_name: grafana
@@ -26,6 +27,8 @@ services:
       - TZ=Etc/UTC
       - GF_PATHS_DATA=/var/lib/grafana
       - GF_PATHS_LOGS=/var/log/grafana
+      - GF_SECURITY_ADMIN_USER=${DEFAULT_USER}
+      - GF_SECURITY_ADMIN_PASSWORD=${DEFAULT_PASSWORD}
     volumes:
       - grafana_data:/var/lib/grafana
       - grafana_logs:/var/log/grafana
@@ -40,20 +43,21 @@ services:
 
   influxdb:
     container_name: influxdb
-    image: "influxdb:1.8"
+    image: influxdb:2.7
     restart: unless-stopped
     environment:
       - TZ=Etc/UTC
-      - INFLUXDB_HTTP_FLUX_ENABLED=false
-      - INFLUXDB_REPORTING_DISABLED=false
-      - INFLUXDB_HTTP_AUTH_ENABLED=false
-      - INFLUXDB_MONITOR_STORE_ENABLED=FALSE
-      - INFLUXDB_DB=sensor_data
+      - DOCKER_INFLUXDB_INIT_MODE=setup
+      - DOCKER_INFLUXDB_INIT_USERNAME=${DEFAULT_USER}
+      - DOCKER_INFLUXDB_INIT_PASSWORD=${DEFAULT_PASSWORD}
+      - DOCKER_INFLUXDB_INIT_ORG=iot
+      - DOCKER_INFLUXDB_INIT_BUCKET=sensor_data
+      - DOCKER_INFLUXDB_INIT_ADMIN_TOKEN=my-token
     volumes:
-      - influxdb_data:/var/lib/influxdb
-      - influxdb_backup:/var/lib/influxdb/backup
+      - influxdb_data:/var/lib/influxdb2
+      - influxdb_backup:/backup
     healthcheck:
-      test: ["CMD", "curl", "http://localhost:8086"]
+      test: ["CMD", "curl", "-f", "http://localhost:8086/health"]
       interval: 30s
       timeout: 10s
       retries: 3
@@ -80,7 +84,7 @@ services:
         fi
         if [ ! -f /volume/pwfile/.initialized ]; then
           echo 'Initializing mosquitto password file';
-          mosquitto_passwd -c -b /volume/pwfile/passwords.txt iotadmin iotadmin;
+          mosquitto_passwd -c -b /volume/pwfile/passwords.txt ${DEFAULT_USER} ${DEFAULT_PASSWORD};
           chown mosquitto:mosquitto /volume/pwfile/passwords.txt;
           touch /volume/pwfile/.initialized;
         else
@@ -120,11 +124,13 @@ services:
     container_name: portainer
     image: portainer/portainer-ce
     restart: unless-stopped
+    command: --admin-password ${PORTAINER_PASSWORD_HASH}
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
       - portainer_data:/data
     networks:
       - iotnet
+
 
   nginx-init:
     container_name: nginx-init
