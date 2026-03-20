@@ -3,6 +3,9 @@ version: '3.6'
 networks:
   iotnet:
     driver: bridge
+    ipam:
+      config:
+        - subnet: 172.0.0.0/16
 
 volumes:
   grafana_data:
@@ -27,6 +30,8 @@ services:
     environment:
       - ALLOWED_SENDER_DOMAINS=*
       - PERMIT_DOCKER=network
+      - ALLOWED_SENDER_DOMAINS=grafana@yourdomain.com
+      - MYNETWORKS=127.0.0.0/8 172.0.0.0/16
     networks:
       - iotnet
 
@@ -130,7 +135,7 @@ services:
       - mosquitto-init
 
   nodered-init:
-    image: alpine:latest
+    image: nodered/node-red
     restart: "no"
     volumes:
       - nodered_data:/data
@@ -140,6 +145,7 @@ services:
         if [ ! -f /data/.initialized ]; then
           echo 'Initializing nodered data';
           cp -r /init/* /data/;
+          chown -R node-red:node-red /data;
           touch /data/.initialized;
         else
           echo 'nodered settings.js already initialized';
