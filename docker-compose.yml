@@ -20,20 +20,7 @@ volumes:
   portainer_data:
   nginx_config:
 
-
 services:
-
-  postfix:
-    image: boky/postfix
-    container_name: postfix
-    restart: unless-stopped
-    environment:
-      - ALLOWED_SENDER_DOMAINS=*
-      - PERMIT_DOCKER=network
-      - ALLOWED_SENDER_DOMAINS=grafana@yourdomain.com
-      - MYNETWORKS=127.0.0.0/8 172.0.0.0/16
-    networks:
-      - iotnet
 
   grafana:
     container_name: grafana
